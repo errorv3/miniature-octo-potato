@@ -1,0 +1,134 @@
+name: ACCESS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-access:
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: E1
+        shell: powershell
+        run: |
+          Set-ItemProperty `
+            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Restart-Service -Name TermService -Force
+
+      - name: U1
+        shell: powershell
+        run: |
+          $securePass = ConvertTo-SecureString "Magneto1234" -AsPlainText -Force
+
+          if (Get-LocalUser -Name "ACCESS" -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name "ACCESS"
+          }
+
+          New-LocalUser -Name "ACCESS" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "ACCESS"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "ACCESS"
+
+          "ACCESS_USER=ACCESS" >> $env:GITHUB_ENV
+          "ACCESS_PASS=Magneto1234" >> $env:GITHUB_ENV
+
+      - name: U2
+        shell: powershell
+        run: |
+          $accessUser = if ($env:ACCESS_USER) { $env:ACCESS_USER } else { "ACCESS" }
+          $desktopPath = Join-Path $env:SystemDrive "Users\$accessUser\Desktop"
+          New-Item -Path $desktopPath -ItemType Directory -Force | Out-Null
+
+          foreach ($script in @("del.cmd", "rar.ps1")) {
+            $sourcePath = Join-Path $env:GITHUB_WORKSPACE $script
+            if (-not (Test-Path -Path $sourcePath)) {
+              Write-Error "Fatal: $script not found at $sourcePath. The workflow cannot continue without this file in the repository root."
+              exit 1
+            }
+            Copy-Item -Path $sourcePath -Destination (Join-Path $desktopPath $script) -Force
+          }
+
+      - name: I1
+        shell: powershell
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: I2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Write-Error "winget is not available on this runner. Ensure the Windows runner image is current and supports winget."
+            exit 1
+          }
+
+          winget install --id Tonec.InternetDownloadManager --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Internet Download Manager installation failed with exit code $LASTEXITCODE. Check network connectivity, winget package source availability, and winget logs in $env:LOCALAPPDATA\Packages\Microsoft.DesktopAppInstaller_*\LocalState\DiagOutputDir."
+            exit 1
+          }
+
+      - name: I3
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Write-Error "winget is not available on this runner. Ensure the Windows runner image is current and supports winget."
+            exit 1
+          }
+
+          winget install --id RARLab.WinRAR --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "WinRAR installation failed with exit code $LASTEXITCODE. Check network connectivity and winget logs in $env:LOCALAPPDATA\Packages\Microsoft.DesktopAppInstaller_*\LocalState\DiagOutputDir."
+            exit 1
+          }
+
+      - name: C1
+        shell: powershell
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=gh-runner-$env:GITHUB_RUN_ID
+
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+
+          if (-not $tsIP) { exit 1 }
+          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: In1
+        shell: powershell
+        run: |
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: $env:ACCESS_USER"
+          Write-Host "Password: $env:ACCESS_PASS"
+
+      - name: K1
+        shell: powershell
+        run: |
+          while ($true) {
+              Start-Sleep -Seconds 300
+          }
+
+          
